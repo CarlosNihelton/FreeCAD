@@ -1,78 +1,79 @@
 {
-description = "A self-contained FreeCAD development environment using Qt6 from Nix unstable.";
+description = "A self-contained FreeCAD development environment using Qt6 and IfcOpenShell.";
 
 inputs = {
-# Pin to the latest bleeding edge of Nixpkgs for the most up-to-date FreeCAD dependencies, including Qt6.
+# Pin to the latest bleeding edge of Nixpkgs for the most up-to-date
+# FreeCAD dependencies, including Qt6 and IfcOpenShell.
 nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 };
 
 outputs = { self, nixpkgs, ... }:
 let
 # Define the systems this flake will support.
-supportedSystems = [ "x86_64-linux" "aarch64-darwin" ];
-forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+supportedSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+
+  # A helper function to get the correct pkgs set for each system
+  pkgsFor = system: import nixpkgs { inherit system; };
+
+  # A helper that applies a function across all supported systems
+  forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 in
-forAllSystems (system:
-let
-# Import the unstable Nixpkgs set for the target system.
-pkgs = import nixpkgs { inherit system; };
+{
+  # --- 1. The Core Development Shell Definition ---
+  devShells = forAllSystems (system:
+    let
+      pkgs = pkgsFor system;
 
-    # Get the FreeCAD package derivation from unstable. This package holds references
-    # to all its build-time and run-time dependencies (Qt6, Python, OCCT, Coin3D, etc.).
-    freecadPackage = pkgs.freecad;
+      # Get the FreeCAD package derivation from unstable. This is our
+      # "source of truth" for all dependencies.
+      freecadPackage = pkgs.freecad;
 
-    # --- Extract Dependencies ---
-    # The safest and most comprehensive approach for a development shell is to inherit
-    # all inputs used by the freecad package itself. We merge buildInputs, nativeBuildInputs, 
-    # and propagatedBuildInputs for full coverage.
-    
-    # Libraries and runtime dependencies (FreeCAD links against these)
-    libraryInputs = freecadPackage.buildInputs 
-      ++ freecadPackage.propagatedBuildInputs;
-      
-    # Build tools (CMake, compiler, pkg-config, etc.)
-    toolInputs = freecadPackage.nativeBuildInputs;
+      # Consolidate all dependency inputs. This pulls in everything:
+      # Qt6, OCCT, Coin3D, Eigen, IfcOpenShell, all Python modules, etc.
+      # We use lib.unique to avoid duplicates.
+      allBuildDeps = pkgs.lib.unique (
+        (freecadPackage.buildInputs or []) ++ 
+        (freecadPackage.propagatedBuildInputs or [])
+      );
 
-    # Explicit development tools for convenience
-    extraDevTools = with pkgs; [
-      # Essential C/C++ toolchain
-      pkgs.stdenv.cc.cc
-      # Build systems
-      cmake
-      ninja  # Ninja is often faster than standard Make
-      pkg-config
-      # Version control and debugging
-      git
-      gdb
-    ];
+      # Consolidate all tool inputs (compiler, cmake, etc.)
+      allToolDeps = pkgs.lib.unique (
+        (freecadPackage.nativeBuildInputs or []) ++ [
+          # Add essential dev tools
+          pkgs.gcc           # The full C/C++ toolchain (fixes CMake test failures)
+          pkgs.cmake
+          pkgs.ninja        # Recommended build generator
+          pkgs.pkg-config
+          pkgs.git
+          pkgs.gdb          # Debugger
+        ]
+      );
 
-  in
-  {
-    devShells.default = pkgs.mkShell {
-      name = "freecad-qt6-dev-shell";
+    in
+    {
+      default = pkgs.mkShell {
+        name = "freecad-qt6-ifc-shell";
 
-      # nativeBuildInputs: Tools needed to perform the build
-      nativeBuildInputs = pkgs.lib.unique (toolInputs ++ extraDevTools);
+        # buildInputs: Libraries and headers needed for linking/compilation
+        buildInputs = allBuildDeps;
 
-      # buildInputs: Libraries and headers needed for linking/compilation
-      buildInputs = pkgs.lib.unique libraryInputs;
+        # nativeBuildInputs: Tools needed to perform the build
+        nativeBuildInputs = allToolDeps;
 
-      # --- Environment Setup ---
-      shellHook = ''
-        echo "--------------------------------------------------------"
-        echo "Entering FreeCAD Development Shell (Nix unstable, Qt6)"
-        echo "All FreeCAD dependencies (C++, Python, Qt6) are available."
-        echo ""
-        echo "Suggested build steps (assuming source code is in current dir):"
-        echo "  1. mkdir build"
-        echo "  2. cmake -B build -S . -G Ninja"
-        echo "  3. ninja -C build"
-        echo "  4. run FreeCAD with: ./build/bin/FreeCAD"
-        echo "--------------------------------------------------------"
-      '';
-    };
-  }
-);
+        # --- Environment Setup ---
+        shellHook = ''
+          echo "--------------------------------------------------------"
+          echo "Entering FreeCAD Development Shell (Qt6 + IfcOpenShell)"
+          echo "Dependencies are sourced from the 'freecad' package."
+          echo ""
+          echo "Use 'cmake --preset=nix-debug' or 'cmake --preset=nix-release'"
+          echo "to configure your build."
+          echo "--------------------------------------------------------"
+        '';
+      };
+    }
+  );
+};
 
 
 }
